@@ -24,6 +24,8 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
 
 @property (weak, nonatomic) IBOutlet UILabel *stateLabel;
 @property (weak, nonatomic) IBOutlet UILabel *statusLabel;
+@property (weak, nonatomic) IBOutlet UILabel *rangeLabel;
+@property (weak, nonatomic) IBOutlet UILabel *lxstateLabel;
 
 @end
 
@@ -33,27 +35,27 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-
+    
     self.beaconManager = [[ESTBeaconManager alloc] init];
     self.beaconManager.delegate = self;
-
-    ESTBeaconRegion *region = [[ESTBeaconRegion alloc] initWithProximityUUID:ESTIMOTE_PROXIMITY_UUID major:PLBeaconMajor minor:PLBeaconMinor identifier:@"estimote"];
+    
+    ESTBeaconRegion *region = [[ESTBeaconRegion alloc] initWithProximityUUID:ESTIMOTE_PROXIMITY_UUID major:PLBeaconMajor minor:PLBeaconMinor identifier:@"estimote" ];
     region.notifyOnEntry = YES;
     region.notifyOnExit = YES;
-
+    [self.beaconManager startRangingBeaconsInRegion:region];
     [self.beaconManager startMonitoringForRegion:region];
-    //[self.beaconManager startRangingBeaconsInRegion:region];
+    self.lxstateLabel.text = [NSString stringWithFormat:@"LIFX Power State: %@",NSStringFromLFXPowerState(self.controlledLight.powerState)];
+    
 }
-
 
 #pragma mark - Light Control
 
 - (void)requestLightUpdateWithStateIsOn:(BOOL)switchOn
 {
     DLog(@"Requesting light switch %@", (switchOn ? @"ON" : @"OFF"));
-
+    
     UIApplication *application = [UIApplication sharedApplication];
-
+    
     self.bgTask = [application beginBackgroundTaskWithExpirationHandler: ^{
         dispatch_async(dispatch_get_main_queue(), ^{
             DLog(@"Background task expired for request light switch %@", (switchOn ? @"ON" : @"OFF"));
@@ -61,18 +63,20 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
             self.bgTask = UIBackgroundTaskInvalid;
         });
     }];
-
-    if (switchOn)
+    
+    if (switchOn && self.controlledLight.powerState == LFXPowerStateOff)
     {
         [self notifyWithMessage:@"Switching light on"];
         [[self controlledLight] setPowerState:LFXPowerStateOn];
     }
-    else
+    else if (!switchOn && self.controlledLight.powerState == LFXPowerStateOn)
     {
         [self notifyWithMessage:@"Switching light off"];
         [[self controlledLight] setPowerState:LFXPowerStateOff];
     }
-
+    
+    self.lxstateLabel.text = [NSString stringWithFormat:@"LIFX Power State: %@",NSStringFromLFXPowerState(self.controlledLight.powerState)];
+    
     // Allow some background task time for LIFX request to get through, for when app is backgrounded
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DLog(@"Background task ending for request light switch %@", (switchOn ? @"ON" : @"OFF"));
@@ -98,7 +102,6 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
     [self requestLightUpdateWithStateIsOn:NO];
 }
 
-
 #pragma mark - Notify
 
 - (void)notifyWithMessage:(NSString *)message
@@ -110,15 +113,43 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
     [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
 }
 
+- (void)beaconManager:(__unused ESTBeaconManager *)manager
+      didRangeBeacons:(NSArray *)beacons
+             inRegion:(ESTBeaconRegion *)region {
+    DLog(@"beacons: %@ region: %@", beacons, region);
+    if ([beacons count] > 0) {
+        CLBeacon *nearestExhibit = [beacons firstObject];
+        switch (nearestExhibit.proximity) {
+            case CLProximityNear:
+                self.rangeLabel.text = [NSString stringWithFormat:@"Proximity: Near"];
+                [self requestLightUpdateWithStateIsOn:YES];
+                break;
+            case CLProximityFar:
+                [self requestLightUpdateWithStateIsOn:NO];
+                self.rangeLabel.text = [NSString stringWithFormat:@"Proximity: Far"];
+                break;
+            case CLProximityImmediate:
+                self.rangeLabel.text = [NSString stringWithFormat:@"Proximity: Immediate"];
+                [self requestLightUpdateWithStateIsOn:YES];
+                break;
+            case CLProximityUnknown:
+                self.rangeLabel.text = [NSString stringWithFormat:@"Proximity: Unknown"];
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 
 #pragma mark - ESTBeaconManagerDelegate
 
 - (void)beaconManager:(__unused ESTBeaconManager *)manager didDetermineState:(CLRegionState)state forRegion:(ESTBeaconRegion *)region
 {
     DLog(@"state: %ld region: %@", state, region);
-
+    
     self.stateLabel.text = [NSString stringWithFormat:@"State: %@ (%@)", NSStringFromCLRegionState(state), region];
-
+    
     if (state == CLRegionStateInside)
     {
         [self requestLightUpdateWithStateIsOn:YES];
@@ -137,7 +168,7 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
 - (void)beaconManager:(__unused ESTBeaconManager *)manager didEnterRegion:(ESTBeaconRegion *)region
 {
     DLog(@"region: %@", region);
-
+    
     self.statusLabel.text = [NSString stringWithFormat:@"Did enter region at %@", [NSDate date]];
     [self requestLightUpdateWithStateIsOn:YES];
 }
@@ -145,7 +176,7 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
 - (void)beaconManager:(__unused ESTBeaconManager *)manager didExitRegion:(ESTBeaconRegion *)region
 {
     DLog(@"region: %@", region);
-
+    
     self.statusLabel.text = [NSString stringWithFormat:@"Did exit region at (%@)", [NSDate date]];
     [self requestLightUpdateWithStateIsOn:NO];
 }
@@ -155,10 +186,6 @@ static CLBeaconMinorValue const PLBeaconMinor = 46588;
     DLog(@"region: %@", region);
 }
 
-- (void)beaconManager:(__unused ESTBeaconManager *)manager didRangeBeacons:(NSArray *)beacons inRegion:(ESTBeaconRegion *)region
-{
-    DLog(@"beacons: %@ region: %@", beacons, region);
-}
 
 - (void)beaconManager:(__unused ESTBeaconManager *)manager monitoringDidFailForRegion:(ESTBeaconRegion *)region withError:(NSError *)error
 {
@@ -185,24 +212,24 @@ NS_INLINE NSString *
 NSStringFromCLRegionState(CLRegionState state)
 {
     NSString *value = nil;
-
+    
     switch (state) {
         case CLRegionStateUnknown:
             value = @"Unknown";
             break;
-
+            
         case CLRegionStateInside:
             value = @"Inside";
             break;
-
+            
         case CLRegionStateOutside:
             value = @"Outside";
             break;
-
+            
         default:
             break;
     }
-
+    
     return value;
 }
 
